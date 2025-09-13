@@ -211,9 +211,10 @@ fcntl.ioctl(fd, ROTARY_SET_RANGE, range_data)
 while True:
     ready, _, _ = select.select([fd], [], [], 1.0)
     if ready:
-        data = fd.read(52)  # sizeof(rotary_status) with name field
-        encoder_id, position, direction, button, timestamp = struct.unpack('iiiIL', data[:20])
-        name = data[20:52].split(b'\x00', 1)[0].decode('utf-8')
+        data = fd.read(56)  # sizeof(rotary_status) with proper alignment
+        encoder_id, position, direction, button = struct.unpack('iiii', data[:16])
+        timestamp = struct.unpack('L', data[16:24])[0]
+        name = data[24:56].split(b'\x00', 1)[0].decode('utf-8')
         print(f"Encoder {encoder_id} ({name}): pos={position}, dir={direction}, btn={button}")
 ```
 

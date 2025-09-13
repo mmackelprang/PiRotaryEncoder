@@ -88,12 +88,13 @@ class RotaryEncoder:
                 'name': str
             }
         """
-        # Pack status data with name field (52 bytes total)
+        # Pack status data with proper alignment (56 bytes total due to padding)
         status_data = struct.pack('iiiiL32s', encoder_id, 0, 0, 0, 0, b'')
         try:
             result = fcntl.ioctl(self.fd, ROTARY_GET_POSITION, status_data)
-            encoder_id, position, direction, button, timestamp = struct.unpack('iiiiL', result[:20])
-            name_bytes = result[20:52]
+            encoder_id, position, direction, button = struct.unpack('iiii', result[:16])
+            timestamp = struct.unpack('L', result[16:24])[0]
+            name_bytes = result[24:56]
             name = name_bytes.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
             return {
                 'encoder_id': encoder_id,
@@ -148,15 +149,16 @@ class RotaryEncoder:
             return []  # Timeout
         
         try:
-            # Read data for all encoders (up to 4 * 52 bytes now that we have name field)
-            data = os.read(self.fd, 208)
+            # Read data for all encoders (up to 4 * 56 bytes due to struct padding)
+            data = os.read(self.fd, 224)
             events = []
             
-            # Parse events (each event is now 52 bytes: 5 ints + 32 char name)
-            for i in range(0, len(data), 52):
-                if i + 52 <= len(data):
-                    encoder_id, position, direction, button, timestamp = struct.unpack('iiiiL', data[i:i+20])
-                    name_bytes = data[i+20:i+52]
+            # Parse events (each event is 56 bytes due to struct alignment)
+            for i in range(0, len(data), 56):
+                if i + 56 <= len(data):
+                    encoder_id, position, direction, button = struct.unpack('iiii', data[i:i+16])
+                    timestamp = struct.unpack('L', data[i+16:i+24])[0]
+                    name_bytes = data[i+24:i+56]
                     # Convert name bytes to string, stopping at null terminator
                     name = name_bytes.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
                     events.append({
