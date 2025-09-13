@@ -122,7 +122,7 @@ int main(int argc, char *argv[])
             int num_read = ret / sizeof(struct rotary_status);
             for (int i = 0; i < num_read; i++) {
                 if (status[i].direction != 0 || status[i].button_pressed) {
-                    printf("Encoder %d: Position=%d", status[i].encoder_id, status[i].position);
+                    printf("Encoder %d (%s): Position=%d", status[i].encoder_id, status[i].name, status[i].position);
                     
                     if (status[i].direction > 0) {
                         printf(" (Clockwise)");

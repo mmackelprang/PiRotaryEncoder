@@ -35,6 +35,7 @@ struct rotary_status {
     int direction;  /* -1 for CCW, 1 for CW, 0 for no change */
     int button_pressed;
     unsigned long timestamp;
+    char name[32];  /* Encoder name from configuration */
 };
 
 #endif /* ROTARY_ENCODER_H */

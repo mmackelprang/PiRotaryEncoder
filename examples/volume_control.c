@@ -121,12 +121,13 @@ int main()
                 if (!muted) {
                     set_system_volume(volume);
                 } else {
-                    printf("Volume: %d%% (MUTED)\n", volume);
+                    printf("Volume (%s): %d%% (MUTED)\n", status[0].name, volume);
                 }
             }
             
             if (status[0].button_pressed) {
                 /* Mute/unmute toggle */
+                printf("Button pressed on %s\n", status[0].name);
                 toggle_mute();
             }
         }
