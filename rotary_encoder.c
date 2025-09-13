@@ -26,6 +26,9 @@
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/jiffies.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/string.h>
 
 #define DEVICE_NAME "rotary_encoder"
 #define CLASS_NAME "rotary_encoder"
@@ -53,7 +56,18 @@ struct rotary_status {
     unsigned long timestamp;
 };
 
+struct encoder_config {
+    char name[32];
+    int clk_pin;
+    int dt_pin;
+    int sw_pin;
+    int min_range;
+    int max_range;
+    int enabled;
+};
+
 struct rotary_encoder {
+    char name[32];
     int clk_gpio;
     int dt_gpio;
     int sw_gpio;
@@ -78,6 +92,10 @@ static int clk_pins[MAX_ENCODERS] = {18, 22, 24, 26};
 static int dt_pins[MAX_ENCODERS] = {19, 23, 25, 27};
 static int sw_pins[MAX_ENCODERS] = {20, -1, -1, -1}; /* -1 means no button */
 
+static char *config_file = "/etc/rotary_encoder.conf";
+module_param(config_file, charp, S_IRUGO);
+MODULE_PARM_DESC(config_file, "Configuration file path (default: /etc/rotary_encoder.conf)");
+
 module_param_array(clk_pins, int, NULL, S_IRUGO);
 module_param_array(dt_pins, int, NULL, S_IRUGO);
 module_param_array(sw_pins, int, NULL, S_IRUGO);
@@ -85,6 +103,10 @@ module_param_array(sw_pins, int, NULL, S_IRUGO);
 MODULE_PARM_DESC(clk_pins, "GPIO pins for CLK signals (default: 18,22,24,26)");
 MODULE_PARM_DESC(dt_pins, "GPIO pins for DT signals (default: 19,23,25,27)");
 MODULE_PARM_DESC(sw_pins, "GPIO pins for switch signals (default: 20,-1,-1,-1, -1=no button)");
+
+/* Configuration storage */
+static struct encoder_config encoder_configs[MAX_ENCODERS];
+static int config_loaded = 0;
 
 /* Global variables */
 static dev_t dev_number;
@@ -99,6 +121,182 @@ MODULE_PARM_DESC(num_encoders, "Number of encoders to initialize (1-4, default: 
 /* Function prototypes */
 static irqreturn_t rotary_clk_interrupt(int irq, void *dev_id);
 static irqreturn_t rotary_sw_interrupt(int irq, void *dev_id);
+static int load_encoder_config(void);
+static void init_default_config(void);
+static int parse_config_line(char *line);
+
+/* Initialize default configuration */
+static void init_default_config(void)
+{
+    int i;
+    
+    for (i = 0; i < MAX_ENCODERS; i++) {
+        snprintf(encoder_configs[i].name, sizeof(encoder_configs[i].name), "encoder_%d", i);
+        encoder_configs[i].clk_pin = clk_pins[i];
+        encoder_configs[i].dt_pin = dt_pins[i];
+        encoder_configs[i].sw_pin = sw_pins[i];
+        encoder_configs[i].min_range = -2147483648; /* INT_MIN */
+        encoder_configs[i].max_range = 2147483647;  /* INT_MAX */
+        encoder_configs[i].enabled = (i == 0) ? 1 : 0; /* Only enable first encoder by default */
+    }
+    
+    /* Enable up to num_encoders */
+    for (i = 0; i < num_encoders && i < MAX_ENCODERS; i++) {
+        encoder_configs[i].enabled = 1;
+    }
+}
+
+/* Parse a single configuration line */
+static int parse_config_line(char *line)
+{
+    char *ptr, *name_ptr, *clk_ptr, *dt_ptr, *sw_ptr, *min_ptr, *max_ptr;
+    int encoder_id;
+    int clk_pin, dt_pin, sw_pin, min_range, max_range;
+    
+    /* Skip empty lines and comments */
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line == '\0' || *line == '#' || *line == '\n') {
+        return 0; /* Skip this line */
+    }
+    
+    /* Format: encoder_id=name:clk_pin:dt_pin:sw_pin:min_range:max_range */
+    ptr = strchr(line, '=');
+    if (!ptr) {
+        return -1; /* Invalid format */
+    }
+    
+    *ptr = '\0';
+    encoder_id = simple_strtol(line, NULL, 10);
+    if (encoder_id < 0 || encoder_id >= MAX_ENCODERS) {
+        return -1; /* Invalid encoder ID */
+    }
+    
+    /* Parse the configuration values */
+    name_ptr = ptr + 1;
+    clk_ptr = strchr(name_ptr, ':');
+    if (!clk_ptr) return -1;
+    *clk_ptr = '\0';
+    clk_ptr++;
+    
+    dt_ptr = strchr(clk_ptr, ':');
+    if (!dt_ptr) return -1;
+    *dt_ptr = '\0';
+    dt_ptr++;
+    
+    sw_ptr = strchr(dt_ptr, ':');
+    if (!sw_ptr) return -1;
+    *sw_ptr = '\0';
+    sw_ptr++;
+    
+    min_ptr = strchr(sw_ptr, ':');
+    if (!min_ptr) return -1;
+    *min_ptr = '\0';
+    min_ptr++;
+    
+    max_ptr = strchr(min_ptr, ':');
+    if (!max_ptr) return -1;
+    *max_ptr = '\0';
+    max_ptr++;
+    
+    /* Remove newline from max_ptr if present */
+    ptr = strchr(max_ptr, '\n');
+    if (ptr) *ptr = '\0';
+    
+    /* Convert values */
+    clk_pin = simple_strtol(clk_ptr, NULL, 10);
+    dt_pin = simple_strtol(dt_ptr, NULL, 10);
+    sw_pin = simple_strtol(sw_ptr, NULL, 10);
+    min_range = simple_strtol(min_ptr, NULL, 10);
+    max_range = simple_strtol(max_ptr, NULL, 10);
+    
+    /* Validate values */
+    if (clk_pin < 0 || clk_pin > 27 || dt_pin < 0 || dt_pin > 27) {
+        return -1; /* Invalid GPIO pins */
+    }
+    if (sw_pin < -1 || sw_pin > 27) {
+        return -1; /* Invalid switch pin */
+    }
+    if (min_range >= max_range) {
+        return -1; /* Invalid range */
+    }
+    
+    /* Store configuration */
+    strncpy(encoder_configs[encoder_id].name, name_ptr, sizeof(encoder_configs[encoder_id].name) - 1);
+    encoder_configs[encoder_id].name[sizeof(encoder_configs[encoder_id].name) - 1] = '\0';
+    encoder_configs[encoder_id].clk_pin = clk_pin;
+    encoder_configs[encoder_id].dt_pin = dt_pin;
+    encoder_configs[encoder_id].sw_pin = sw_pin;
+    encoder_configs[encoder_id].min_range = min_range;
+    encoder_configs[encoder_id].max_range = max_range;
+    encoder_configs[encoder_id].enabled = 1;
+    
+    return 0;
+}
+
+/* Load configuration from file */
+static int load_encoder_config(void)
+{
+    struct file *file;
+    loff_t pos = 0;
+    char *buffer, *line_start, *line_end;
+    int ret = 0;
+    ssize_t bytes_read;
+    
+    /* Initialize default configuration first */
+    init_default_config();
+    
+    /* Try to open configuration file */
+    file = filp_open(config_file, O_RDONLY, 0);
+    if (IS_ERR(file)) {
+        printk(KERN_WARNING "rotary_encoder: Configuration file '%s' not found, using default settings\n", config_file);
+        return 0; /* Use defaults, this is not an error */
+    }
+    
+    /* Allocate buffer for reading */
+    buffer = kmalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!buffer) {
+        filp_close(file, NULL);
+        printk(KERN_ERR "rotary_encoder: Failed to allocate buffer for configuration file\n");
+        return -ENOMEM;
+    }
+    
+    /* Read file content */
+    bytes_read = kernel_read(file, buffer, PAGE_SIZE - 1, &pos);
+    if (bytes_read < 0) {
+        ret = bytes_read;
+        printk(KERN_ERR "rotary_encoder: Failed to read configuration file: %d\n", ret);
+        goto cleanup;
+    }
+    
+    buffer[bytes_read] = '\0'; /* Null terminate */
+    
+    /* Parse line by line */
+    line_start = buffer;
+    while ((line_end = strchr(line_start, '\n')) != NULL) {
+        *line_end = '\0';
+        
+        if (parse_config_line(line_start) < 0) {
+            printk(KERN_WARNING "rotary_encoder: Invalid configuration line: %s\n", line_start);
+        }
+        
+        line_start = line_end + 1;
+    }
+    
+    /* Handle last line if no newline at end */
+    if (*line_start != '\0') {
+        if (parse_config_line(line_start) < 0) {
+            printk(KERN_WARNING "rotary_encoder: Invalid configuration line: %s\n", line_start);
+        }
+    }
+    
+    config_loaded = 1;
+    printk(KERN_INFO "rotary_encoder: Configuration loaded from '%s'\n", config_file);
+    
+cleanup:
+    kfree(buffer);
+    filp_close(file, NULL);
+    return ret;
+}
 
 /* Interrupt handler for CLK pin */
 static irqreturn_t rotary_clk_interrupt(int irq, void *dev_id)
@@ -207,6 +405,8 @@ static ssize_t rotary_read(struct file *file, char __user *buffer, size_t len, l
         status[i].direction = encoders[i].direction;
         status[i].button_pressed = encoders[i].button_pressed;
         status[i].timestamp = jiffies;
+        strncpy(status[i].name, encoders[i].name, sizeof(status[i].name) - 1);
+        status[i].name[sizeof(status[i].name) - 1] = '\0';
         
         /* Clear the flags after reading */
         encoders[i].direction = 0;
@@ -269,6 +469,8 @@ static long rotary_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             status.direction = encoders[status.encoder_id].direction;
             status.button_pressed = encoders[status.encoder_id].button_pressed;
             status.timestamp = jiffies;
+            strncpy(status.name, encoders[status.encoder_id].name, sizeof(status.name) - 1);
+            status.name[sizeof(status.name) - 1] = '\0';
             mutex_unlock(&encoders[status.encoder_id].lock);
             
             if (copy_to_user((void __user *)arg, &status, sizeof(status))) {
@@ -345,13 +547,15 @@ static int init_encoder(int id)
     struct rotary_encoder *enc = &encoders[id];
     int ret;
     
-    /* Initialize encoder structure */
-    enc->clk_gpio = clk_pins[id];
-    enc->dt_gpio = dt_pins[id];
-    enc->sw_gpio = sw_pins[id];
+    /* Initialize encoder structure from configuration */
+    strncpy(enc->name, encoder_configs[id].name, sizeof(enc->name) - 1);
+    enc->name[sizeof(enc->name) - 1] = '\0';
+    enc->clk_gpio = encoder_configs[id].clk_pin;
+    enc->dt_gpio = encoder_configs[id].dt_pin;
+    enc->sw_gpio = encoder_configs[id].sw_pin;
     enc->position = 0;
-    enc->min_value = -2147483648; /* INT_MIN */
-    enc->max_value = 2147483647;  /* INT_MAX */
+    enc->min_value = encoder_configs[id].min_range;
+    enc->max_value = encoder_configs[id].max_range;
     enc->last_clk = 0;
     enc->last_dt = 0;
     enc->direction = 0;
@@ -466,6 +670,26 @@ static int __init rotary_init(void)
     
     printk(KERN_INFO "rotary_encoder: Initializing driver\n");
     
+    /* Load configuration file */
+    ret = load_encoder_config();
+    if (ret < 0) {
+        printk(KERN_ERR "rotary_encoder: Failed to load configuration: %d\n", ret);
+        return ret;
+    }
+    
+    /* Count enabled encoders if using config file */
+    if (config_loaded) {
+        int enabled_count = 0;
+        for (i = 0; i < MAX_ENCODERS; i++) {
+            if (encoder_configs[i].enabled) {
+                enabled_count++;
+            }
+        }
+        if (enabled_count > 0) {
+            num_encoders = enabled_count;
+        }
+    }
+    
     /* Validate parameters */
     if (num_encoders < 1 || num_encoders > MAX_ENCODERS) {
         printk(KERN_ERR "rotary_encoder: Invalid number of encoders (%d)\n", num_encoders);
@@ -507,22 +731,58 @@ static int __init rotary_init(void)
     }
     
     /* Initialize encoders */
-    for (i = 0; i < num_encoders; i++) {
-        ret = init_encoder(i);
-        if (ret) {
-            /* Cleanup already initialized encoders */
-            while (--i >= 0) {
-                cleanup_encoder(i);
+    if (config_loaded) {
+        /* Initialize only enabled encoders from config */
+        for (i = 0; i < MAX_ENCODERS; i++) {
+            if (encoder_configs[i].enabled) {
+                ret = init_encoder(i);
+                if (ret) {
+                    /* Cleanup already initialized encoders */
+                    int j;
+                    for (j = 0; j < i; j++) {
+                        if (encoder_configs[j].enabled) {
+                            cleanup_encoder(j);
+                        }
+                    }
+                    device_destroy(rotary_class, dev_number);
+                    cdev_del(&rotary_cdev);
+                    class_destroy(rotary_class);
+                    unregister_chrdev_region(dev_number, 1);
+                    return ret;
+                }
             }
-            device_destroy(rotary_class, dev_number);
-            cdev_del(&rotary_cdev);
-            class_destroy(rotary_class);
-            unregister_chrdev_region(dev_number, 1);
-            return ret;
+        }
+    } else {
+        /* Initialize encoders using legacy method */
+        for (i = 0; i < num_encoders; i++) {
+            ret = init_encoder(i);
+            if (ret) {
+                /* Cleanup already initialized encoders */
+                while (--i >= 0) {
+                    cleanup_encoder(i);
+                }
+                device_destroy(rotary_class, dev_number);
+                cdev_del(&rotary_cdev);
+                class_destroy(rotary_class);
+                unregister_chrdev_region(dev_number, 1);
+                return ret;
+            }
         }
     }
     
-    printk(KERN_INFO "rotary_encoder: Driver initialized with %d encoder(s)\n", num_encoders);
+    if (config_loaded) {
+        printk(KERN_INFO "rotary_encoder: Driver initialized with %d encoder(s) from configuration file\n", num_encoders);
+        for (i = 0; i < MAX_ENCODERS; i++) {
+            if (encoder_configs[i].enabled) {
+                printk(KERN_INFO "rotary_encoder: Encoder %d ('%s'): CLK=%d, DT=%d, SW=%d, range=%d to %d\n",
+                       i, encoder_configs[i].name, encoder_configs[i].clk_pin, 
+                       encoder_configs[i].dt_pin, encoder_configs[i].sw_pin,
+                       encoder_configs[i].min_range, encoder_configs[i].max_range);
+            }
+        }
+    } else {
+        printk(KERN_INFO "rotary_encoder: Driver initialized with %d encoder(s) using default configuration\n", num_encoders);
+    }
     return 0;
 }
 
@@ -534,8 +794,16 @@ static void __exit rotary_exit(void)
     printk(KERN_INFO "rotary_encoder: Cleaning up driver\n");
     
     /* Cleanup all encoders */
-    for (i = 0; i < num_encoders; i++) {
-        cleanup_encoder(i);
+    if (config_loaded) {
+        for (i = 0; i < MAX_ENCODERS; i++) {
+            if (encoder_configs[i].enabled) {
+                cleanup_encoder(i);
+            }
+        }
+    } else {
+        for (i = 0; i < num_encoders; i++) {
+            cleanup_encoder(i);
+        }
     }
     
     /* Remove device and class */

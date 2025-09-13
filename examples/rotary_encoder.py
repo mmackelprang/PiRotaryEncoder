@@ -84,19 +84,24 @@ class RotaryEncoder:
                 'position': int,
                 'direction': int,  # -1=CCW, 1=CW, 0=no change
                 'button_pressed': bool,
-                'timestamp': int
+                'timestamp': int,
+                'name': str
             }
         """
-        status_data = struct.pack('iiiiL', encoder_id, 0, 0, 0, 0)
+        # Pack status data with name field (52 bytes total)
+        status_data = struct.pack('iiiiL32s', encoder_id, 0, 0, 0, 0, b'')
         try:
             result = fcntl.ioctl(self.fd, ROTARY_GET_POSITION, status_data)
-            encoder_id, position, direction, button, timestamp = struct.unpack('iiiiL', result)
+            encoder_id, position, direction, button, timestamp = struct.unpack('iiiiL', result[:20])
+            name_bytes = result[20:52]
+            name = name_bytes.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
             return {
                 'encoder_id': encoder_id,
                 'position': position,
                 'direction': direction,
                 'button_pressed': bool(button),
-                'timestamp': timestamp
+                'timestamp': timestamp,
+                'name': name
             }
         except OSError as e:
             raise RuntimeError(f"Failed to get position: {e}")
@@ -143,20 +148,24 @@ class RotaryEncoder:
             return []  # Timeout
         
         try:
-            # Read data for all encoders (up to 4 * 20 bytes)
-            data = os.read(self.fd, 80)
+            # Read data for all encoders (up to 4 * 52 bytes now that we have name field)
+            data = os.read(self.fd, 208)
             events = []
             
-            # Parse events (each event is 20 bytes)
-            for i in range(0, len(data), 20):
-                if i + 20 <= len(data):
+            # Parse events (each event is now 52 bytes: 5 ints + 32 char name)
+            for i in range(0, len(data), 52):
+                if i + 52 <= len(data):
                     encoder_id, position, direction, button, timestamp = struct.unpack('iiiiL', data[i:i+20])
+                    name_bytes = data[i+20:i+52]
+                    # Convert name bytes to string, stopping at null terminator
+                    name = name_bytes.split(b'\x00', 1)[0].decode('utf-8', errors='replace')
                     events.append({
                         'encoder_id': encoder_id,
                         'position': position,
                         'direction': direction,
                         'button_pressed': bool(button),
-                        'timestamp': timestamp
+                        'timestamp': timestamp,
+                        'name': name
                     })
             
             return events
@@ -197,11 +206,12 @@ def demo_volume_control():
                 
                 for event in events:
                     if event['encoder_id'] == 0:  # Only process encoder 0
+                        encoder_name = event.get('name', 'encoder_0')
                         if event['direction'] != 0:
                             # Volume changed
                             volume = event['position']
                             status = " (MUTED)" if muted else ""
-                            print(f"Volume: {volume}%{status}")
+                            print(f"Volume ({encoder_name}): {volume}%{status}")
                             
                             # Here you could use subprocess to call amixer:
                             # subprocess.run(['amixer', 'set', 'Master', f'{volume}%'], 
@@ -266,11 +276,12 @@ def demo_multi_encoder():
                 for event in events:
                     if event['direction'] != 0 or event['button_pressed']:
                         enc_id = event['encoder_id']
+                        enc_name = event.get('name', f'encoder_{enc_id}')
                         pos = event['position']
                         direction = "CW" if event['direction'] > 0 else "CCW" if event['direction'] < 0 else ""
                         button = " [BUTTON]" if event['button_pressed'] else ""
                         
-                        print(f"Encoder {enc_id}: {pos:4d} {direction:3s}{button}")
+                        print(f"Encoder {enc_id} ({enc_name}): {pos:4d} {direction:3s}{button}")
     
     except Exception as e:
         print(f"Error: {e}")

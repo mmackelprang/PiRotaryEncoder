@@ -82,13 +82,58 @@ make
 sudo make install
 ```
 
+### Configuration File
+
+The driver now supports configuration via a text file, making encoder setup more flexible and user-friendly.
+
+#### Configuration File Format
+
+Create `/etc/rotary_encoder.conf` with the following format:
+
+```
+# Raspberry Pi Rotary Encoder Configuration File
+# Format: encoder_id=name:clk_pin:dt_pin:sw_pin:min_range:max_range
+
+# Basic volume control encoder with button
+0=volume_control:18:19:20:-100:100
+
+# Menu navigation encoder without button  
+1=menu_nav:22:23:-1:0:10
+
+# Fine adjustment encoder with wide range
+2=fine_adjust:24:25:-1:-1000:1000
+
+# Simple on/off encoder
+3=power_switch:26:27:28:0:1
+```
+
+**Field Descriptions:**
+- `encoder_id`: Encoder index (0-3)
+- `name`: Descriptive name (no spaces, use underscores)
+- `clk_pin`: GPIO pin for CLK signal
+- `dt_pin`: GPIO pin for DT signal  
+- `sw_pin`: GPIO pin for switch/button (-1 for no button)
+- `min_range`: Minimum position value
+- `max_range`: Maximum position value
+
+#### Configuration File Behavior
+
+- If the configuration file exists, it will be used to configure encoders
+- If the file is missing, a warning is emitted and default settings are used
+- Only encoders defined in the config file will be initialized
+- Invalid configuration lines are logged and skipped
+- The configuration file path can be changed with the `config_file` module parameter
+
 ### Loading the Module
 
 ```bash
-# Load with default settings (1 encoder on pins 18,19,20)
+# Load with default settings and config file
 sudo insmod rotary_encoder.ko
 
-# Load with custom configuration
+# Load with custom configuration file path
+sudo insmod rotary_encoder.ko config_file=/home/pi/my_encoders.conf
+
+# Load with legacy module parameters (overrides config file)
 sudo insmod rotary_encoder.ko num_encoders=2 clk_pins=18,22 dt_pins=19,23 sw_pins=20,-1
 
 # Or use make targets
@@ -99,10 +144,11 @@ sudo make reload  # Reload module
 
 ### Module Parameters
 
-- `num_encoders`: Number of encoders to initialize (1-4, default: 1)
-- `clk_pins`: Array of CLK GPIO pins (default: 18,22,24,26)
-- `dt_pins`: Array of DT GPIO pins (default: 19,23,25,27)  
-- `sw_pins`: Array of SW GPIO pins (default: 20,-1,-1,-1, -1=no button)
+- `config_file`: Path to configuration file (default: `/etc/rotary_encoder.conf`)
+- `num_encoders`: Number of encoders to initialize (1-4, default: 1, used only if config file not found)
+- `clk_pins`: Array of CLK GPIO pins (default: 18,22,24,26, used only if config file not found)
+- `dt_pins`: Array of DT GPIO pins (default: 19,23,25,27, used only if config file not found)  
+- `sw_pins`: Array of SW GPIO pins (default: 20,-1,-1,-1, used only if config file not found)
 
 ## Usage
 
@@ -140,6 +186,10 @@ ioctl(fd, ROTARY_RESET, &encoder_id);
 
 ### Python Interface
 
+For a complete Python interface with helper classes, see `examples/rotary_encoder.py`.
+
+**Basic usage example:**
+
 ```python
 import fcntl
 import struct
@@ -161,9 +211,10 @@ fcntl.ioctl(fd, ROTARY_SET_RANGE, range_data)
 while True:
     ready, _, _ = select.select([fd], [], [], 1.0)
     if ready:
-        data = fd.read(20)  # sizeof(rotary_status)
-        encoder_id, position, direction, button, timestamp = struct.unpack('iiiIL', data)
-        print(f"Encoder {encoder_id}: pos={position}, dir={direction}, btn={button}")
+        data = fd.read(52)  # sizeof(rotary_status) with name field
+        encoder_id, position, direction, button, timestamp = struct.unpack('iiiIL', data[:20])
+        name = data[20:52].split(b'\x00', 1)[0].decode('utf-8')
+        print(f"Encoder {encoder_id} ({name}): pos={position}, dir={direction}, btn={button}")
 ```
 
 ### Shell Scripting
@@ -196,6 +247,7 @@ struct rotary_status {
     int direction;      // -1=CCW, 1=CW, 0=no change
     int button_pressed; // 1=pressed, 0=not pressed
     unsigned long timestamp; // Kernel timestamp (jiffies)
+    char name[32];      // Encoder name from configuration
 };
 ```
 

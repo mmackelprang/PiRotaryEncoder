@@ -17,6 +17,21 @@ clean:
 install: all
 	sudo $(MAKE) -C $(KDIR) M=$(PWD) modules_install
 	sudo depmod -a
+	sudo mkdir -p /etc
+	sudo cp etc/rotary_encoder.conf /etc/rotary_encoder.conf.example
+	@echo "Configuration example installed to /etc/rotary_encoder.conf.example"
+	@echo "Copy to /etc/rotary_encoder.conf and edit as needed"
+
+# Install configuration file
+install-config:
+	sudo mkdir -p /etc
+	sudo cp etc/rotary_encoder.conf /etc/rotary_encoder.conf.example
+	@if [ ! -f /etc/rotary_encoder.conf ]; then \
+		sudo cp etc/rotary_encoder.conf /etc/rotary_encoder.conf; \
+		echo "Default configuration installed to /etc/rotary_encoder.conf"; \
+	else \
+		echo "Configuration file /etc/rotary_encoder.conf already exists, not overwriting"; \
+	fi
 
 # Load module
 load:
@@ -37,4 +52,4 @@ info:
 logs:
 	dmesg | tail -20
 
-.PHONY: all clean install load unload reload info logs
+.PHONY: all clean install install-config load unload reload info logs
