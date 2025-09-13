@@ -1,0 +1,51 @@
+# Kernel module build artifacts
+*.ko
+*.o
+*.mod.c
+*.mod
+*.cmd
+*.symvers
+*.order
+modules.order
+Module.symvers
+.tmp_versions/
+
+# Compiled examples
+test_rotary
+examples/test_rotary
+examples/volume_control
+
+# Editor temporary files
+*~
+*.swp
+*.swo
+.*.tmp
+
+# IDE files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Backup files
+*.bak
+*.backup
+
+# Log files
+*.log
+
+# Device tree compiled files
+*.dtbo

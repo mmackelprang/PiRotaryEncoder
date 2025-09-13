@@ -1,0 +1,78 @@
+/*
+ * Device Tree Overlay for Raspberry Pi Rotary Encoder Driver
+ *
+ * This overlay configures GPIO pins for rotary encoders.
+ * Copy to /boot/overlays/ and add to /boot/config.txt
+ *
+ * Usage in /boot/config.txt:
+ * dtoverlay=rotary-encoder
+ * dtoverlay=rotary-encoder,clk0=18,dt0=19,sw0=20
+ * dtoverlay=rotary-encoder,clk0=18,dt0=19,sw0=20,clk1=22,dt1=23
+ *
+ * Author: Mark Mackelprang
+ * License: MIT
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&gpio>;
+        __overlay__ {
+            rotary_pins: rotary_pins {
+                brcm,pins = <18 19 20>; /* Default pins for encoder 0 */
+                brcm,function = <0>;    /* GPIO_IN */
+                brcm,pull = <2>;        /* GPIO_PULL_UP */
+            };
+        };
+    };
+
+    fragment@1 {
+        target-path = "/";
+        __overlay__ {
+            rotary_encoder {
+                compatible = "gpio-rotary-encoder";
+                pinctrl-names = "default";
+                pinctrl-0 = <&rotary_pins>;
+                
+                /* Default configuration for encoder 0 */
+                gpios = <&gpio 18 0>, <&gpio 19 0>; /* CLK, DT */
+                linux,axis = <0>; /* REL_X */
+                rotary-encoder,encoding = "gray";
+                rotary-encoder,steps = <24>; /* Typical for KY-040 */
+                rotary-encoder,relative-axis;
+            };
+        };
+    };
+
+    __overrides__ {
+        /* Encoder 0 pins */
+        clk0 = <&rotary_pins>,"brcm,pins:0",
+               <&rotary_encoder>,"gpios:4";
+        dt0 = <&rotary_pins>,"brcm,pins:4",
+              <&rotary_encoder>,"gpios:16";
+        sw0 = <&rotary_pins>,"brcm,pins:8";
+        
+        /* Encoder 1 pins */
+        clk1 = <&rotary_pins>,"brcm,pins:12";
+        dt1 = <&rotary_pins>,"brcm,pins:16";
+        sw1 = <&rotary_pins>,"brcm,pins:20";
+        
+        /* Encoder 2 pins */
+        clk2 = <&rotary_pins>,"brcm,pins:24";
+        dt2 = <&rotary_pins>,"brcm,pins:28";
+        sw2 = <&rotary_pins>,"brcm,pins:32";
+        
+        /* Encoder 3 pins */
+        clk3 = <&rotary_pins>,"brcm,pins:36";
+        dt3 = <&rotary_pins>,"brcm,pins:40";
+        sw3 = <&rotary_pins>,"brcm,pins:44";
+        
+        /* Configuration options */
+        steps = <&rotary_encoder>,"rotary-encoder,steps:0";
+        encoding = <&rotary_encoder>,"rotary-encoder,encoding";
+    };
+};
